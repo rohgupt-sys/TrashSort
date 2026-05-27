@@ -64,23 +64,58 @@ function App() {
   const canvasRef = useRef(null);
   const modelRef = useRef(null);
   const animFrameRef = useRef(null);
+  const facingModeRef = useRef("environment");
 
   const [predictions, setPredictions] = useState([]);
   const [topClass, setTopClass] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [facingMode, setFacingMode] = useState("environment");
 
   const { trackPrediction, resetTracking, lastSaved, saveError } = useSessionTracker();
   const [toast, setToast] = useState(null); // { id, type, className, confidence } | null
+
+  // Play a two-tone chime via Web Audio API — no external file needed
+  const playDetectionSound = useCallback((className) => {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      // Each category gets a distinct pair of pitches
+      const tones = {
+        Trash:      [330, 262],   // descending minor — "uh oh"
+        Compost:    [523, 659],   // rising major — pleasant
+        Recycling:  [587, 784],   // rising brighter
+        "No Waste": [880, 1047],  // high, clean
+      };
+      const [f1, f2] = tones[className] ?? [523, 659];
+      const playNote = (freq, start, dur) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.value = freq;
+        osc.type = "sine";
+        gain.gain.setValueAtTime(0, start);
+        gain.gain.linearRampToValueAtTime(0.25, start + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
+        osc.start(start);
+        osc.stop(start + dur);
+      };
+      playNote(f1, ctx.currentTime, 0.35);
+      playNote(f2, ctx.currentTime + 0.18, 0.35);
+    } catch { /* ignore if audio is blocked */ }
+  }, []);
 
   // Show success toast when a session is saved
   useEffect(() => {
     if (!lastSaved) return;
     setToast({ id: lastSaved.at, type: "success", className: lastSaved.className, confidence: lastSaved.confidence });
+    playDetectionSound(lastSaved.className);
     const t = setTimeout(() => setToast(null), 4000);
     return () => clearTimeout(t);
-  }, [lastSaved]);
+  }, [lastSaved, playDetectionSound]);
 
   // Show error toast when a save fails
   useEffect(() => {
@@ -93,7 +128,7 @@ function App() {
   const startWebcam = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: 640, height: 480 },
+        video: { facingMode: facingModeRef.current, width: 640, height: 480 },
       });
       if (webcamRef.current) {
         webcamRef.current.srcObject = stream;
@@ -110,6 +145,16 @@ function App() {
       webcamRef.current.srcObject = null;
     }
   }, []);
+
+  const handleFlipCamera = useCallback(async () => {
+    const next = facingModeRef.current === "environment" ? "user" : "environment";
+    facingModeRef.current = next;
+    setFacingMode(next);
+    if (isRunning) {
+      stopWebcam();
+      await startWebcam();
+    }
+  }, [isRunning, stopWebcam, startWebcam]);
 
   useEffect(() => {
     let cancelled = false;
@@ -301,6 +346,21 @@ function App() {
             >
               <video ref={webcamRef} className="w-full h-full object-cover" playsInline muted />
               <canvas ref={canvasRef} className="hidden" />
+
+              {/* Flip camera button — useful on phones/tablets */}
+              {!isLoading && (
+                <button
+                  onClick={handleFlipCamera}
+                  title={facingMode === "environment" ? "Switch to front camera" : "Switch to rear camera"}
+                  className="absolute bottom-10 right-3 z-20 w-10 h-10 rounded-full backdrop-blur-xl bg-black/50 border border-white/[0.12] flex items-center justify-center text-white/70 hover:text-white hover:bg-black/70 active:scale-90 transition-all duration-200 cursor-pointer"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
+                    <path d="M20 7h-3.5l-1.5-2h-6L7.5 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2Z" />
+                    <path d="M15.5 13a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0Z" />
+                    <path d="M17 4.5 19.5 7 17 9.5" />
+                  </svg>
+                </button>
+              )}
 
               {/* Corner targeting brackets */}
               {BRACKETS.map((cls, i) => (
